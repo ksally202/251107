@@ -1,12 +1,11 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.express as px
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import LSTM, Dense
 from datetime import datetime, timedelta
-import io
 import os
 
 # ---------------------------------------------------
@@ -37,7 +36,7 @@ st.markdown(MOBILE_CSS, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------
-# AppBar
+# App Bar
 # ---------------------------------------------------
 st.markdown("""
 <div style="background:#5C6BC0; padding:18px; color:white; 
@@ -66,17 +65,16 @@ today_mood_score = mood_score_map[mood]
 
 
 # ---------------------------------------------------
-# 60일 가상 데이터 생성
+# 60일 가상데이터 생성
 # ---------------------------------------------------
 today = datetime.today()
 dates = [today - timedelta(days=i) for i in range(60)]
 dates = sorted(dates)
 
 rng = np.random.default_rng(42)
-
 stress_vals = np.clip(rng.normal(70, 12, 60), 20, 100)
 sleep_vals = np.clip(rng.normal(7, 1.2, 60), 4, 10)
-mood_vals = np.clip(rng.normal(50, 15, 60), 10, 100)  # 시뮬레이션 기분 점수
+mood_vals = np.clip(rng.normal(50, 15, 60), 10, 100)
 
 df = pd.DataFrame({
     "날짜": dates,
@@ -87,7 +85,7 @@ df = pd.DataFrame({
 
 
 # ---------------------------------------------------
-# LSTM 학습 데이터(다변량) 구성
+# LSTM 학습 데이터 구성
 # ---------------------------------------------------
 sequence_length = 7
 dataset = df[["스트레스", "수면", "기분점수"]].values
@@ -95,7 +93,7 @@ dataset = df[["스트레스", "수면", "기분점수"]].values
 X, y = [], []
 for i in range(len(dataset) - sequence_length):
     X.append(dataset[i:i+sequence_length])
-    y.append(dataset[i+sequence_length][0])  # 다음날 스트레스 예측
+    y.append(dataset[i+sequence_length][0])
 
 X = np.array(X)
 y = np.array(y)
@@ -107,13 +105,13 @@ y = np.array(y)
 MODEL_PATH = "stress_lstm_model.h5"
 
 # ---------------------------------------------------
-# LSTM 모델 불러오기 또는 새 모델 학습
+# 모델 불러오기 또는 새 모델 학습
 # ---------------------------------------------------
 if os.path.exists(MODEL_PATH):
     model = load_model(MODEL_PATH)
 else:
     model = Sequential([
-        LSTM(50, activation='tanh', return_sequences=False, input_shape=(sequence_length, 3)),
+        LSTM(50, activation='tanh', input_shape=(sequence_length, 3)),
         Dense(32, activation="relu"),
         Dense(1)
     ])
@@ -142,7 +140,6 @@ for _ in range(7):
     pred = float(np.clip(pred, 0, 100))
     future_preds.append(pred)
 
-    # 다음 입력 업데이트 (기분점수는 오늘 기분으로 반영)
     next_input = np.array([pred, sleep_vals[-1], today_mood_score])
     new_seq = np.append(seq.flatten()[3:], next_input).reshape((1, sequence_length, 3))
     seq = new_seq
@@ -155,44 +152,42 @@ with st.container():
     st.markdown('<div class="mobile-card">', unsafe_allow_html=True)
 
     st.subheader("📅 오늘의 상태 요약")
-    st.write(f"😵 오늘 스트레스: **{df.iloc[-1]['스트레스']:.1f}점**")
+    st.write(f"😵 스트레스: **{df.iloc[-1]['스트레스']:.1f}점**")
     st.write(f"💤 수면시간: **{df.iloc[-1]['수면']:.1f}시간**")
-    st.write(f"😊 오늘 기분 점수: **{today_mood_score}점**")
+    st.write(f"😊 기분 점수: **{today_mood_score}점**")
     st.write(f"🤖 LSTM 예측 — 내일 스트레스: **{predicted_tomorrow:.1f}점**")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ---------------------------------------------------
-# 향후 7일 예측 그래프
+# 향후 7일 예측 그래프 (plotly)
 # ---------------------------------------------------
 with st.container():
     st.markdown('<div class="mobile-card">', unsafe_allow_html=True)
+    st.subheader("📈 향후 7일 AI 스트레스 예측")
 
-    st.subheader("📈 향후 7일 스트레스 예측 (AI)")
     future_dates = [today + timedelta(days=i+1) for i in range(7)]
+    df_future = pd.DataFrame({"날짜": future_dates, "예측스트레스": future_preds})
 
-    plt.figure(figsize=(10,4))
-    plt.plot(future_dates, future_preds, marker="o", linewidth=3, color="#FF6B6B")
-    plt.grid(alpha=0.3)
-    plt.xticks(rotation=45)
-    plt.ylabel("스트레스 지수 (0~100)")
-    st.pyplot(plt)
+    fig = px.line(df_future, x="날짜", y="예측스트레스",
+                  markers=True, title="7일 스트레스 예측",
+                  color_discrete_sequence=["#FF6B6B"])
 
+    st.plotly_chart(fig, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ---------------------------------------------------
-# 최근 스트레스 추세 그래프
+# 최근 60일 추세 그래프 (plotly)
 # ---------------------------------------------------
 with st.container():
     st.markdown('<div class="mobile-card">', unsafe_allow_html=True)
-
     st.subheader("📘 최근 60일 스트레스 변화")
-    plt.figure(figsize=(10,4))
-    plt.plot(df["날짜"], df["스트레스"], linewidth=2, color="#4CAF50")
-    plt.grid(alpha=0.3)
-    plt.xticks(rotation=45)
-    st.pyplot(plt)
 
+    fig2 = px.line(df, x="날짜", y="스트레스",
+                   markers=False, title="스트레스 추세",
+                   color_discrete_sequence=["#4CAF50"])
+
+    st.plotly_chart(fig2, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
