@@ -1,105 +1,190 @@
-import streamlit as st
+import streamstreamlit as st
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.layers import LSTM, Dense
+from datetime import datetime, timedelta
 import io
+import os
 
-# ----- 기본 설정 -----
-st.set_page_config(page_title="당신의 스트레스를 해소해드립니다", layout="centered")
+# ---------------------------------------------------
+# 모바일 스타일 CSS
+# ---------------------------------------------------
+MOBILE_CSS = """
+<style>
+body { background-color: #F8F9FB !important; }
+header, footer {visibility: hidden;}
+.block-container {padding-top: 0rem !important;}
 
-st.title("🌿 당신의 스트레스를 해소해드립니다")
-st.write("사용자의 **감정, 수면 패턴, 웨어러블 데이터**를 분석해 자동으로 스트레스 지수를 시각화하는 앱입니다.")
-
-# ----- 1️⃣ 오늘의 기분 -----
-st.subheader("😊 오늘의 기분은?")
-mood = st.radio(
-    "오늘의 기분을 선택하세요:",
-    ["😀 매우 좋음", "🙂 보통", "😐 피곤함", "😣 스트레스 많음"],
-    horizontal=True
-)
-
-# ----- 2️⃣ 수면 데이터 입력 -----
-st.subheader("💤 내 수면시간 입력")
-sleep_hours = st.number_input("오늘 잔 수면 시간 (시간 단위)", min_value=0.0, max_value=12.0, step=0.5)
-st.write(f"오늘 수면시간: **{sleep_hours}시간**")
-
-# ----- 3️⃣ 자동 스트레스 지수 계산 -----
-# 기분 + 수면시간 기반 단순 모델
-mood_score = {
-    "😀 매우 좋음": 20,
-    "🙂 보통": 40,
-    "😐 피곤함": 70,
-    "😣 스트레스 많음": 90
-}[mood]
-
-sleep_penalty = max(0, (7 - sleep_hours) * 5)
-stress_score = min(100, max(0, mood_score + sleep_penalty + np.random.randint(-5, 6)))
-
-# ----- 4️⃣ 스트레스 지수 시각화 -----
-st.subheader("📊 자동 분석된 스트레스 지수")
-col1, col2 = st.columns([1, 2])
-
-with col1:
-    # 원형 시각화
-    fig, ax = plt.subplots(figsize=(2.5, 2.5))
-    ax.pie([stress_score, 100 - stress_score],
-           labels=["", ""],
-           startangle=90,
-           colors=["#ff6b6b", "#e0e0e0"],
-           wedgeprops={'width': 0.3})
-    ax.text(0, 0, f"{stress_score}\n점", ha="center", va="center", fontsize=16, weight="bold")
-    st.pyplot(fig)
-
-with col2:
-    if stress_score < 30:
-        st.success("🧘‍♀️ 스트레스가 거의 없어요! 오늘은 여유로운 하루예요.")
-    elif stress_score < 70:
-        st.info("💪 적당한 스트레스는 집중력을 높여줘요.")
-    else:
-        st.warning("😥 스트레스가 높아요. 명상이나 산책으로 긴장을 풀어보세요!")
-
-# ----- 5️⃣ 수면 패턴 시각화 -----
-st.subheader("📈 나의 수면 패턴 (요일별 평균)")
-data = {
-    "요일": ["월", "화", "수", "목", "금", "토", "일"],
-    "평균 수면시간": [7.3, 7.1, 7.4, 7.2, 7.0, 8.3, 8.5]
+.mobile-card {
+    background: white;
+    padding: 20px 25px;
+    border-radius: 18px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.07);
+    margin-bottom: 25px;
 }
-df = pd.DataFrame(data)
-
-fig2, ax2 = plt.subplots()
-ax2.plot(df["요일"], df["평균 수면시간"], marker="o", color="#4caf50", linewidth=2)
-ax2.set_title("요일별 평균 수면시간", fontsize=14)
-ax2.set_ylabel("시간 (h)")
-st.pyplot(fig2)
-
-# ----- 6️⃣ 주간 리포트 생성 -----
-st.subheader("📄 나의 주간 리포트")
-report_text = f"""
-🗓 나의 주간 스트레스 리포트
-
-- 오늘의 기분: {mood}
-- 자동 분석된 스트레스 지수: {stress_score}점
-- 오늘의 수면시간: {sleep_hours}시간
-- 이번주 평균 수면시간: {df['평균 수면시간'].mean():.1f}시간
-
-💡 개인 피드백:
+h1 { font-size: 1.8rem !important; text-align:center; font-weight:700;}
+.stButton > button {
+    background: #5C6BC0; color:white;
+    border-radius: 12px; padding: 12px;
+    width: 100%; font-size:1.1rem;
+}
+</style>
 """
-if stress_score > 70:
-    report_text += "스트레스가 높아요 😥 오늘은 잠시 휴식과 명상이 필요해요."
-elif sleep_hours < 6:
-    report_text += "수면이 부족해요 😴 오늘은 일찍 잠드는 게 좋아요."
+st.markdown(MOBILE_CSS, unsafe_allow_html=True)
+
+# ---------------------------------------------------
+# App Bar
+# ---------------------------------------------------
+st.markdown("""
+<div style="background:#5C6BC0; padding:18px; color:white; 
+            text-align:center; border-radius:0 0 18px 18px; 
+            font-size:22px; font-weight:700;">
+📱 스트레스 예측 앱 - LSTM 버전
+</div>
+""", unsafe_allow_html=True)
+
+# ---------------------------------------------------
+# 오늘의 기분 입력
+# ---------------------------------------------------
+with st.container():
+    st.markdown('<div class="mobile-card">', unsafe_allow_html=True)
+    st.subheader("😊 오늘의 기분")
+    mood = st.radio(
+        "오늘 기분 선택",
+        ["😀 매우 좋음", "🙂 보통", "😐 피곤함", "😣 스트레스 많음"],
+        horizontal=True
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+mood_score_map = {"😀 매우 좋음": 10, "🙂 보통": 30, "😐 피곤함": 60, "😣 스트레스 많음": 85}
+today_mood_score = mood_score_map[mood]
+
+# ---------------------------------------------------
+# 가상 데이터 생성 (60일)
+# ---------------------------------------------------
+today = datetime.today()
+dates = [today - timedelta(days=i) for i in range(60)]
+dates = sorted(dates)
+
+rng = np.random.default_rng(42)
+
+stress_vals = np.clip(rng.normal(70, 12, 60), 20, 100)
+sleep_vals = np.clip(rng.normal(7, 1.2, 60), 4, 10)
+
+# 기분 점수 데이터도 추가 (랜덤+트렌드)
+mood_vals = np.clip(rng.normal(50, 15, 60), 10, 100)
+
+df = pd.DataFrame({
+    "날짜": dates,
+    "스트레스": stress_vals,
+    "수면": sleep_vals,
+    "기분점수": mood_vals
+})
+
+# ---------------------------------------------------
+# 다변량 LSTM 학습 데이터 준비
+# ---------------------------------------------------
+sequence_length = 7
+
+dataset = df[["스트레스", "수면", "기분점수"]].values
+
+X, y = [], []
+for i in range(len(dataset) - sequence_length):
+    X.append(dataset[i:i+sequence_length])
+    y.append(dataset[i+sequence_length][0])  # 다음날 스트레스
+
+X = np.array(X)
+y = np.array(y)
+
+# ---------------------------------------------------
+# 모델 저장 경로
+# ---------------------------------------------------
+MODEL_PATH = "stress_lstm_model.h5"
+model = None
+
+# ---------------------------------------------------
+# 모델 불러오기 or 새로 학습
+# ---------------------------------------------------
+if os.path.exists(MODEL_PATH):
+    model = load_model(MODEL_PATH)
 else:
-    report_text += "좋은 컨디션이에요 🌟 꾸준히 관리해보세요!"
+    model = Sequential([
+        LSTM(50, activation='tanh', return_sequences=False, input_shape=(sequence_length, 3)),
+        Dense(32, activation="relu"),
+        Dense(1)
+    ])
+    model.compile(optimizer="adam", loss="mse")
+    model.fit(X, y, epochs=40, verbose=0)
+    model.save(MODEL_PATH)
+    st.success("새 LSTM 모델을 학습하고 저장했습니다!")
 
-# ----- 7️⃣ 텍스트 리포트 다운로드 -----
-buffer = io.BytesIO()
-buffer.write(report_text.encode("utf-8"))
-st.download_button(
-    label="📥 나의 주간 리포트 다운로드",
-    data=buffer,
-    file_name="나의_주간_리포트.txt",
-    mime="text/plain"
-)
+# ---------------------------------------------------
+# 내일 스트레스 예측
+# ---------------------------------------------------
+last_seq = dataset[-sequence_length:]
+last_seq = last_seq.reshape((1, sequence_length, 3))
 
-# ----- 하단 설명 -----
-st.caption("💤 수면시간은 휴대폰 사용 로그 기반으로, 화면 OFF 후 30분 동안 활동이 없을 때 취침으로 간주합니다.")
+predicted_tomorrow = model.predict(last_seq)[0][0]
+predicted_tomorrow = float(np.clip(predicted_tomorrow, 0, 100))
+
+# ---------------------------------------------------
+# 7일 미래 예측
+# ---------------------------------------------------
+future_preds = []
+seq = last_seq.copy()
+
+for _ in range(7):
+    pred = model.predict(seq)[0][0]
+    pred = float(np.clip(pred, 0, 100))
+    future_preds.append(pred)
+
+    new_seq = np.append(seq.flatten()[3:], [pred, sleep_vals[-1], today_mood_score]).reshape((1, sequence_length, 3))
+    seq = new_seq
+
+# ---------------------------------------------------
+# 오늘의 상황 카드
+# ---------------------------------------------------
+with st.container():
+    st.markdown('<div class="mobile-card">', unsafe_allow_html=True)
+
+    st.subheader("📅 오늘의 상태")
+    st.write(f"스트레스: **{df.iloc[-1]['스트레스']:.1f}점**")
+    st.write(f"수면: **{df.iloc[-1]['수면']:.1f}시간**")
+    st.write(f"오늘의 기분 점수: **{today_mood_score}점**")
+    st.write(f"🤖 내일 예상 스트레스 (LSTM): **{predicted_tomorrow:.1f}점**")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ---------------------------------------------------
+# 7일 예측 그래프
+# ---------------------------------------------------
+with st.container():
+    st.markdown('<div class="mobile-card">', unsafe_allow_html=True)
+    st.subheader("📈 향후 7일 스트레스 예측")
+    
+    future_dates = [today + timedelta(days=i+1) for i in range(7)]
+    plt.figure(figsize=(10,4))
+    plt.plot(future_dates, future_preds, marker="o", linewidth=3, color="#FF6B6B")
+    plt.grid(alpha=0.3)
+    plt.xticks(rotation=45)
+    st.pyplot(plt)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ---------------------------------------------------
+# 최근 데이터 추세도 보여주기
+# ---------------------------------------------------
+with st.container():
+    st.markdown('<div class="mobile-card">', unsafe_allow_html=True)
+    st.subheader("📘 최근 스트레스 추세")
+
+    plt.figure(figsize=(10,4))
+    plt.plot(df["날짜"], df["스트레스"], color="#4CAF50", linewidth=2)
+    plt.grid(alpha=0.3)
+    plt.xticks(rotation=45)
+    st.pyplot(plt)
+
+    st.markdown('</div>', unsafe_allow_html=True)
