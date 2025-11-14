@@ -1,19 +1,14 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-import plotly.express as px
-import tensorflow as tf
-from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import LSTM, Dense
 from datetime import datetime, timedelta
-import os
 
 # ---------------------------------------------------
 # 모바일 스타일 CSS
 # ---------------------------------------------------
 MOBILE_CSS = """
 <style>
-body { background-color: #F8F9FB !important; }
+body { background-color: #F2F3F7 !important; }
 header, footer {visibility: hidden;}
 .block-container {padding-top: 0rem !important;}
 
@@ -21,19 +16,20 @@ header, footer {visibility: hidden;}
     background: white;
     padding: 20px 25px;
     border-radius: 18px;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.07);
+    box-shadow: 0 4px 15px rgba(0,0,0,0.08);
     margin-bottom: 25px;
 }
-h1 { font-size: 1.8rem !important; text-align:center; font-weight:700;}
 .stButton > button {
-    background: #5C6BC0; color:white;
-    border-radius: 12px; padding: 12px;
-    width: 100%; font-size:1.1rem;
+    background: #5C6BC0; 
+    color:white;
+    border-radius: 12px;
+    padding: 12px;
+    width: 100%;
+    font-size:1.05rem;
 }
 </style>
 """
 st.markdown(MOBILE_CSS, unsafe_allow_html=True)
-
 
 # ---------------------------------------------------
 # App Bar
@@ -42,13 +38,12 @@ st.markdown("""
 <div style="background:#5C6BC0; padding:18px; color:white; 
             text-align:center; border-radius:0 0 18px 18px; 
             font-size:22px; font-weight:700;">
-📱 스트레스 예측 앱 - LSTM AI 버전
+📱 스트레스 예측 앱 (경량 AI 버전)
 </div>
 """, unsafe_allow_html=True)
 
-
 # ---------------------------------------------------
-# 오늘의 기분 입력
+# 오늘 기분 선택
 # ---------------------------------------------------
 with st.container():
     st.markdown('<div class="mobile-card">', unsafe_allow_html=True)
@@ -60,134 +55,111 @@ with st.container():
     )
     st.markdown('</div>', unsafe_allow_html=True)
 
-mood_score_map = {"😀 매우 좋음": 10, "🙂 보통": 30, "😐 피곤함": 60, "😣 스트레스 많음": 85}
-today_mood_score = mood_score_map[mood]
+mood_score_map = {
+    "😀 매우 좋음": -8,
+    "🙂 보통": 0,
+    "😐 피곤함": +7,
+    "😣 스트레스 많음": +15
+}
 
+mood_effect = mood_score_map[mood]
 
 # ---------------------------------------------------
-# 60일 가상데이터 생성
+# 가상 60일 스트레스·수면 데이터 생성
 # ---------------------------------------------------
 today = datetime.today()
+
 dates = [today - timedelta(days=i) for i in range(60)]
 dates = sorted(dates)
 
 rng = np.random.default_rng(42)
-stress_vals = np.clip(rng.normal(70, 12, 60), 20, 100)
+
+stress_vals = np.clip(rng.normal(70, 10, 60), 20, 100)
 sleep_vals = np.clip(rng.normal(7, 1.2, 60), 4, 10)
-mood_vals = np.clip(rng.normal(50, 15, 60), 10, 100)
 
 df = pd.DataFrame({
     "날짜": dates,
     "스트레스": stress_vals,
-    "수면": sleep_vals,
-    "기분점수": mood_vals
+    "수면": sleep_vals
 })
 
+# ---------------------------------------------------
+# 경량 AI 예측 모델 (EMA + 조건 기반 보정)
+# ---------------------------------------------------
+def ai_predict(stress_series, sleep_today, mood_effect):
+    # 1) 지수 이동평균(EMA)
+    ema_pred = stress_series.ewm(span=5).mean().iloc[-1]
+
+    # 2) 수면 부족 보정
+    sleep_effect = 0
+    if sleep_today < 5:
+        sleep_effect += 10
+    elif sleep_today < 6:
+        sleep_effect += 5
+
+    # 3) 기분 영향 보정
+    final_pred = ema_pred + sleep_effect + mood_effect
+
+    return float(np.clip(final_pred, 0, 100))
+
+# 오늘 데이터 반영
+today_stress = df.iloc[-1]["스트레스"]
+today_sleep = df.iloc[-1]["수면"]
+
+predicted_tomorrow = ai_predict(df["스트레스"], today_sleep, mood_effect)
 
 # ---------------------------------------------------
-# LSTM 학습 데이터 구성
-# ---------------------------------------------------
-sequence_length = 7
-dataset = df[["스트레스", "수면", "기분점수"]].values
-
-X, y = [], []
-for i in range(len(dataset) - sequence_length):
-    X.append(dataset[i:i+sequence_length])
-    y.append(dataset[i+sequence_length][0])
-
-X = np.array(X)
-y = np.array(y)
-
-
-# ---------------------------------------------------
-# 모델 저장 경로
-# ---------------------------------------------------
-MODEL_PATH = "stress_lstm_model.h5"
-
-# ---------------------------------------------------
-# 모델 불러오기 또는 새 모델 학습
-# ---------------------------------------------------
-if os.path.exists(MODEL_PATH):
-    model = load_model(MODEL_PATH)
-else:
-    model = Sequential([
-        LSTM(50, activation='tanh', input_shape=(sequence_length, 3)),
-        Dense(32, activation="relu"),
-        Dense(1)
-    ])
-    model.compile(optimizer="adam", loss="mse")
-    model.fit(X, y, epochs=40, verbose=0)
-    model.save(MODEL_PATH)
-    st.success("새로운 LSTM 모델을 학습하고 저장했습니다!")
-
-
-# ---------------------------------------------------
-# 내일 스트레스 예측
-# ---------------------------------------------------
-last_seq = dataset[-sequence_length:].reshape((1, sequence_length, 3))
-predicted_tomorrow = model.predict(last_seq)[0][0]
-predicted_tomorrow = float(np.clip(predicted_tomorrow, 0, 100))
-
-
-# ---------------------------------------------------
-# 7일 미래 예측
+# 향후 7일 예측
 # ---------------------------------------------------
 future_preds = []
-seq = last_seq.copy()
+fake_series = df["스트레스"].copy()
+
+current_sleep = today_sleep
 
 for _ in range(7):
-    pred = model.predict(seq)[0][0]
-    pred = float(np.clip(pred, 0, 100))
-    future_preds.append(pred)
-
-    next_input = np.array([pred, sleep_vals[-1], today_mood_score])
-    new_seq = np.append(seq.flatten()[3:], next_input).reshape((1, sequence_length, 3))
-    seq = new_seq
-
+    next_pred = ai_predict(fake_series, current_sleep, mood_effect)
+    future_preds.append(next_pred)
+    fake_series = pd.concat([fake_series, pd.Series([next_pred])], ignore_index=True)
 
 # ---------------------------------------------------
-# 오늘 상태 카드
+# 오늘 요약 카드
 # ---------------------------------------------------
 with st.container():
     st.markdown('<div class="mobile-card">', unsafe_allow_html=True)
 
     st.subheader("📅 오늘의 상태 요약")
-    st.write(f"😵 스트레스: **{df.iloc[-1]['스트레스']:.1f}점**")
-    st.write(f"💤 수면시간: **{df.iloc[-1]['수면']:.1f}시간**")
-    st.write(f"😊 기분 점수: **{today_mood_score}점**")
-    st.write(f"🤖 LSTM 예측 — 내일 스트레스: **{predicted_tomorrow:.1f}점**")
+    st.write(f"😵 스트레스: **{today_stress:.1f}점**")
+    st.write(f"💤 수면시간: **{today_sleep:.1f}시간**")
+    st.write(f"🤖 AI 예측 — 내일 스트레스: **{predicted_tomorrow:.1f}점**")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ---------------------------------------------------
-# 향후 7일 예측 그래프 (plotly)
+# 향후 7일 예측 그래프 (Streamlit 기본)
 # ---------------------------------------------------
 with st.container():
     st.markdown('<div class="mobile-card">', unsafe_allow_html=True)
     st.subheader("📈 향후 7일 AI 스트레스 예측")
 
     future_dates = [today + timedelta(days=i+1) for i in range(7)]
-    df_future = pd.DataFrame({"날짜": future_dates, "예측스트레스": future_preds})
+    df_future = pd.DataFrame({
+        "날짜": future_dates,
+        "예측 스트레스": future_preds
+    })
 
-    fig = px.line(df_future, x="날짜", y="예측스트레스",
-                  markers=True, title="7일 스트레스 예측",
-                  color_discrete_sequence=["#FF6B6B"])
+    st.line_chart(df_future.set_index("날짜"))
 
-    st.plotly_chart(fig, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ---------------------------------------------------
-# 최근 60일 추세 그래프 (plotly)
+# 최근 60일 추세 그래프
 # ---------------------------------------------------
 with st.container():
     st.markdown('<div class="mobile-card">', unsafe_allow_html=True)
     st.subheader("📘 최근 60일 스트레스 변화")
 
-    fig2 = px.line(df, x="날짜", y="스트레스",
-                   markers=False, title="스트레스 추세",
-                   color_discrete_sequence=["#4CAF50"])
+    st.line_chart(df.set_index("날짜")["스트레스"])
 
-    st.plotly_chart(fig2, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
